@@ -72,7 +72,7 @@ let currentFileName = '';
 
 const settings = {
   scaleMeters: 1,        // Target size in meters (longest dimension)
-  extrudeDepth: 0.2,
+  extrudeDepth: 0.05,    // Extrusion depth in meters (5cm default)
   bevelThickness: 0,
   curveSegments: 4,
   simplifyTolerance: 0,
@@ -88,6 +88,125 @@ const settings = {
 function parseSVG(svgText) {
   const loader = new SVGLoader();
   return loader.parse(svgText);
+}
+
+// Extrude a flat 2D BufferGeometry (like stroke geometry) along Z axis
+function extrudeBufferGeometry(geometry, depth) {
+  const position = geometry.getAttribute('position');
+  if (!position) return null;
+  
+  const vertexCount = position.count;
+  const index = geometry.getIndex();
+  
+  // Helper to create position key for edge comparison
+  const posKey = (idx) => {
+    const x = position.getX(idx).toFixed(6);
+    const y = position.getY(idx).toFixed(6);
+    return `${x},${y}`;
+  };
+  
+  // Build edge map to find boundary edges (edges that appear only once)
+  // Use position-based keys for non-indexed geometry
+  const edgeMap = new Map();
+  const edgeIndices = new Map(); // Store original indices for each edge
+  
+  const addEdge = (a, b) => {
+    const keyA = posKey(a);
+    const keyB = posKey(b);
+    const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+    const count = (edgeMap.get(key) || 0) + 1;
+    edgeMap.set(key, count);
+    // Store the first occurrence's indices
+    if (count === 1) {
+      edgeIndices.set(key, [a, b]);
+    }
+  };
+  
+  if (index) {
+    const indexArray = index.array;
+    for (let i = 0; i < indexArray.length; i += 3) {
+      addEdge(indexArray[i], indexArray[i + 1]);
+      addEdge(indexArray[i + 1], indexArray[i + 2]);
+      addEdge(indexArray[i + 2], indexArray[i]);
+    }
+  } else {
+    // Non-indexed: every 3 vertices is a triangle
+    for (let i = 0; i < vertexCount; i += 3) {
+      addEdge(i, i + 1);
+      addEdge(i + 1, i + 2);
+      addEdge(i + 2, i);
+    }
+  }
+  
+  // Find boundary edges (count == 1)
+  const boundaryEdges = [];
+  edgeMap.forEach((count, key) => {
+    if (count === 1) {
+      const indices = edgeIndices.get(key);
+      if (indices) {
+        boundaryEdges.push(indices);
+      }
+    }
+  });
+  
+  // Create new positions: front (z=0) and back (z=depth)
+  const newPositions = [];
+  
+  for (let i = 0; i < vertexCount; i++) {
+    newPositions.push(position.getX(i), position.getY(i), 0);
+  }
+  for (let i = 0; i < vertexCount; i++) {
+    newPositions.push(position.getX(i), position.getY(i), depth);
+  }
+  
+  // Create indices
+  const indices = [];
+  
+  if (index) {
+    const indexArray = index.array;
+    // Front face (z = 0)
+    for (let i = 0; i < indexArray.length; i++) {
+      indices.push(indexArray[i]);
+    }
+    // Back face (z = depth, reversed winding)
+    for (let i = 0; i < indexArray.length; i += 3) {
+      indices.push(
+        indexArray[i] + vertexCount,
+        indexArray[i + 2] + vertexCount,
+        indexArray[i + 1] + vertexCount
+      );
+    }
+  } else {
+    // Non-indexed: each set of 3 vertices is a triangle
+    // Front face (z = 0)
+    for (let i = 0; i < vertexCount; i += 3) {
+      indices.push(i, i + 1, i + 2);
+    }
+    // Back face (z = depth, reversed winding)
+    for (let i = 0; i < vertexCount; i += 3) {
+      indices.push(
+        i + vertexCount,
+        i + 2 + vertexCount,
+        i + 1 + vertexCount
+      );
+    }
+  }
+  
+  // Side faces along boundary edges
+  boundaryEdges.forEach(([a, b]) => {
+    const a2 = a + vertexCount;
+    const b2 = b + vertexCount;
+    // Two triangles for the quad
+    indices.push(a, b, a2);
+    indices.push(b, b2, a2);
+  });
+  
+  const newGeometry = new THREE.BufferGeometry();
+  newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+  newGeometry.setIndex(indices);
+  newGeometry.computeVertexNormals();
+  
+  return newGeometry;
 }
 
 // Ramer-Douglas-Peucker algorithm to simplify a path
@@ -241,48 +360,201 @@ function removeDegenerateTriangles(geometry, minArea = 1e-10) {
 
 function createMeshFromSVG(svgData) {
   const paths = svgData.paths;
-  const geometries = [];
+  const allShapes = [];
+  const strokeGeometries = []; // For stroke-only paths
   
   let shapeCount = 0;
   
-  paths.forEach((path) => {
-    const shapes = SVGLoader.createShapes(path);
+  // First pass: collect all shapes and stroke geometries
+  paths.forEach((path, pathIndex) => {
+    const style = path.userData.style;
+    const hasFill = style.fill && style.fill !== 'none' && style.fill !== '';
+    const hasStroke = style.stroke && style.stroke !== 'none' && style.stroke !== '';
     
-    shapes.forEach((rawShape) => {
-      shapeCount++;
+    // Debug logging
+    console.log(`Path ${pathIndex}: fill=${style.fill}, stroke=${style.stroke}, strokeWidth=${style.strokeWidth}, subPaths=${path.subPaths?.length || 0}`);
+    
+    // Handle filled paths
+    if (hasFill) {
+      const shapes = SVGLoader.createShapes(path);
       
-      // Simplify the shape if tolerance is set
-      const shape = settings.simplifyTolerance > 0 
-        ? simplifyShape(rawShape, settings.simplifyTolerance) 
-        : rawShape;
+      shapes.forEach((rawShape) => {
+        shapeCount++;
+        
+        // Simplify the shape if tolerance is set
+        const shape = settings.simplifyTolerance > 0 
+          ? simplifyShape(rawShape, settings.simplifyTolerance) 
+          : rawShape;
+        
+        allShapes.push(shape);
+      });
+    }
+    
+    // Handle stroked paths (convert to geometry)
+    if (hasStroke) {
+      const strokeWidth = style.strokeWidth !== undefined ? parseFloat(style.strokeWidth) : 1;
       
-      const extrudeSettings = {
-        depth: settings.extrudeDepth,
-        bevelEnabled: settings.bevelThickness > 0,
-        bevelThickness: settings.bevelThickness,
-        bevelSize: settings.bevelThickness,
-        bevelOffset: 0,
-        bevelSegments: 2,
-        curveSegments: settings.curveSegments,
-        steps: 1
-      };
+      // SVGLoader stores path data in subPaths array
+      const subPathsToProcess = path.subPaths && path.subPaths.length > 0 
+        ? path.subPaths 
+        : [];
       
-      const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-      geometries.push(geometry);
+      for (const subPath of subPathsToProcess) {
+        // getPoints() converts curves to points
+        const points = subPath.getPoints(settings.curveSegments);
+        if (points.length < 2) continue;
+        
+        // Create stroke geometry using SVGLoader's helper
+        const strokeStyle = {
+          strokeWidth: strokeWidth,
+          strokeLineCap: style.strokeLineCap || 'butt',
+          strokeLineJoin: style.strokeLineJoin || 'miter',
+          strokeMiterLimit: parseFloat(style.strokeMiterLimit) || 4
+        };
+        
+        try {
+          const strokeGeom = SVGLoader.pointsToStroke(points, strokeStyle);
+          if (strokeGeom && strokeGeom.getAttribute('position') && strokeGeom.getAttribute('position').count > 0) {
+            strokeGeometries.push(strokeGeom);
+            shapeCount++;
+          }
+        } catch (e) {
+          console.warn('Failed to create stroke geometry:', e);
+        }
+      }
+      
+      // Also try the currentPath if it exists and has curves
+      if (path.currentPath && path.currentPath.curves && path.currentPath.curves.length > 0) {
+        const points = path.currentPath.getPoints(settings.curveSegments);
+        if (points.length >= 2) {
+          const strokeStyle = {
+            strokeWidth: strokeWidth,
+            strokeLineCap: style.strokeLineCap || 'butt',
+            strokeLineJoin: style.strokeLineJoin || 'miter',
+            strokeMiterLimit: parseFloat(style.strokeMiterLimit) || 4
+          };
+          
+          try {
+            const strokeGeom = SVGLoader.pointsToStroke(points, strokeStyle);
+            if (strokeGeom && strokeGeom.getAttribute('position') && strokeGeom.getAttribute('position').count > 0) {
+              strokeGeometries.push(strokeGeom);
+              shapeCount++;
+            }
+          } catch (e) {
+            console.warn('Failed to create stroke geometry from currentPath:', e);
+          }
+        }
+      }
+    }
+  });
+  
+  if (allShapes.length === 0 && strokeGeometries.length === 0) {
+    return { group: new THREE.Group(), shapeCount: 0, totalVertices: 0 };
+  }
+  
+  // Compute 2D bounding box from shapes and stroke geometries
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  
+  allShapes.forEach(shape => {
+    const points = shape.getPoints(settings.curveSegments);
+    points.forEach(p => {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
     });
+  });
+  
+  // Also include stroke geometries in bounding box
+  strokeGeometries.forEach(geom => {
+    const pos = geom.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) {
+      minX = Math.min(minX, pos.getX(i));
+      maxX = Math.max(maxX, pos.getX(i));
+      minY = Math.min(minY, pos.getY(i));
+      maxY = Math.max(maxY, pos.getY(i));
+    }
+  });
+  
+  const svgWidth = maxX - minX;
+  const svgHeight = maxY - minY;
+  const maxSvgDim = Math.max(svgWidth, svgHeight);
+  
+  // Calculate scale factor: SVG units -> meters
+  const scaleFactor = maxSvgDim > 0 ? settings.scaleMeters / maxSvgDim : 1;
+  
+  // Scale extrusion depth from meters to SVG units
+  // So that after final scaling, it becomes the desired meters
+  const extrudeDepthInSvgUnits = settings.extrudeDepth / scaleFactor;
+  const bevelInSvgUnits = settings.bevelThickness / scaleFactor;
+  
+  // Second pass: create extruded geometries with corrected depth
+  const geometries = [];
+  
+  // Extrude filled shapes
+  allShapes.forEach(shape => {
+    const extrudeSettings = {
+      depth: extrudeDepthInSvgUnits,
+      bevelEnabled: bevelInSvgUnits > 0,
+      bevelThickness: bevelInSvgUnits,
+      bevelSize: bevelInSvgUnits,
+      bevelOffset: 0,
+      bevelSegments: 2,
+      curveSegments: settings.curveSegments,
+      steps: 1
+    };
+    
+    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    geometries.push(geometry);
+  });
+  
+  // Extrude stroke geometries (they're flat 2D, we need to give them depth)
+  strokeGeometries.forEach(strokeGeom => {
+    const extrudedStroke = extrudeBufferGeometry(strokeGeom, extrudeDepthInSvgUnits);
+    if (extrudedStroke) {
+      geometries.push(extrudedStroke);
+    }
+    strokeGeom.dispose();
   });
   
   if (geometries.length === 0) {
     return { group: new THREE.Group(), shapeCount: 0, totalVertices: 0 };
   }
   
-  // Merge all shape geometries together
-  let mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
+  // Normalize all geometries: convert to non-indexed and keep only position
+  const normalizedGeometries = geometries.map(geom => {
+    // Convert to non-indexed
+    let normalized = geom.index ? geom.toNonIndexed() : geom.clone();
+    
+    // Remove uv attribute if present (not needed, causes merge issues)
+    if (normalized.hasAttribute('uv')) {
+      normalized.deleteAttribute('uv');
+    }
+    if (normalized.hasAttribute('normal')) {
+      normalized.deleteAttribute('normal');
+    }
+    
+    return normalized;
+  });
   
-  // Convert to non-indexed, then re-index with vertex merging
-  // This ensures cap vertices connect properly to side walls
-  mergedGeometry = mergedGeometry.toNonIndexed();
-  mergedGeometry = BufferGeometryUtils.mergeVertices(mergedGeometry, settings.mergeDistance);
+  // Dispose original geometries
+  geometries.forEach(g => g.dispose());
+  
+  // Merge all normalized geometries together
+  let mergedGeometry = BufferGeometryUtils.mergeGeometries(normalizedGeometries, false);
+  
+  // Dispose normalized geometries
+  normalizedGeometries.forEach(g => g.dispose());
+  
+  if (!mergedGeometry) {
+    console.error('Failed to merge geometries');
+    return { group: new THREE.Group(), shapeCount: 0, totalVertices: 0 };
+  }
+  
+  // Re-index with vertex merging (geometry is already non-indexed from normalization)
+  // Scale merge distance to SVG units
+  const mergeDistInSvgUnits = settings.mergeDistance / scaleFactor;
+  mergedGeometry = BufferGeometryUtils.mergeVertices(mergedGeometry, mergeDistInSvgUnits);
   
   // Remove degenerate triangles (zero area)
   mergedGeometry = removeDegenerateTriangles(mergedGeometry);
@@ -304,7 +576,7 @@ function createMeshFromSVG(svgData) {
     color: new THREE.Color(settings.meshColor),
     metalness: 0.1,
     roughness: 0.6,
-    side: THREE.FrontSide, // Use FrontSide for proper manifold mesh
+    side: THREE.DoubleSide, // DoubleSide for preview (both faces visible)
     wireframe: settings.wireframe
   });
   
@@ -314,10 +586,8 @@ function createMeshFromSVG(svgData) {
   const group = new THREE.Group();
   group.add(mesh);
   
-  // Scale to target size in meters (based on longest dimension)
-  const maxDim = Math.max(size.x, size.y, size.z);
-  const scale = maxDim > 0 ? settings.scaleMeters / maxDim : 1;
-  group.scale.setScalar(scale);
+  // Scale to target size in meters
+  group.scale.setScalar(scaleFactor);
   
   // Flip Y axis (SVG coordinate system is inverted)
   group.scale.y *= -1;
@@ -325,8 +595,8 @@ function createMeshFromSVG(svgData) {
   // Rotate to lay flat on XZ plane (SVG extrudes along Z, we want it along Y)
   group.rotation.x = -Math.PI / 2;
   
-  // Center extrusion on Y axis
-  group.position.y = (settings.extrudeDepth * scale) / 2;
+  // Center extrusion on Y axis (now in actual meters)
+  group.position.y = settings.extrudeDepth / 2;
   
   return { group, shapeCount, totalVertices };
 }
@@ -732,15 +1002,30 @@ scaleInput.addEventListener('input', (e) => {
 
 // Sliders
 const extrudeSlider = document.getElementById('extrudeSlider');
+const extrudeInput = document.getElementById('extrudeInput');
 const bevelSlider = document.getElementById('bevelSlider');
 const segmentsSlider = document.getElementById('segmentsSlider');
 const colorPicker = document.getElementById('colorPicker');
 const wireframeToggle = document.getElementById('wireframeToggle');
 
+// Sync extrusion slider and input
 extrudeSlider.addEventListener('input', (e) => {
-  settings.extrudeDepth = parseFloat(e.target.value);
-  document.getElementById('extrudeValue').textContent = settings.extrudeDepth.toFixed(2);
+  const val = parseFloat(e.target.value);
+  settings.extrudeDepth = val;
+  extrudeInput.value = val;
   updateMesh();
+});
+
+extrudeInput.addEventListener('input', (e) => {
+  const val = parseFloat(e.target.value);
+  if (val > 0) {
+    settings.extrudeDepth = val;
+    // Update slider if within range
+    if (val <= 10) {
+      extrudeSlider.value = val;
+    }
+    updateMesh();
+  }
 });
 
 bevelSlider.addEventListener('input', (e) => {

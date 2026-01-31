@@ -72,10 +72,13 @@
 
         <div class="control-group">
           <label class="control-label">
-            <span>Extrusion Depth</span>
-            <span class="control-value" id="extrudeValue">0.2</span>
+            <span>Extrusion Depth (m)</span>
           </label>
-          <input type="range" id="extrudeSlider" min="0.01" max="2" step="0.01" value="0.2" class="slider">
+          <div class="input-row">
+            <input type="range" id="extrudeSlider" min="0.01" max="10" step="0.01" value="0.05" class="slider flex-grow">
+            <input type="number" id="extrudeInput" min="0.001" max="100" step="0.01" value="0.05" class="number-input-small">
+          </div>
+          <span class="control-hint">5cm = 0.05m</span>
         </div>
 
         <div class="control-group">

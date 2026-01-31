@@ -213,6 +213,42 @@ body {
   opacity: 1;
 }
 
+/* Input Row (slider + number input) */
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.input-row .slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.number-input-small {
+  width: 70px;
+  padding: 0.375rem 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  outline: none;
+  transition: var(--transition);
+  text-align: right;
+}
+
+.number-input-small:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.number-input-small::-webkit-inner-spin-button,
+.number-input-small::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
 /* Batch Panel */
 .batch-panel {
   background: var(--bg-surface);
