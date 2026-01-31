@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SVG → GLTF</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header-content">
+        <div class="header-title">
+          <h1><span class="accent">SVG</span> → <span class="highlight">GLTF</span></h1>
+          <p class="subtitle">Extrude vector paths into 3D meshes</p>
+        </div>
+        <a href="/source.zip" class="source-link" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="source-icon">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+          </svg>
+          <span>Source</span>
+        </a>
+      </div>
+    </header>
+
+    <div class="main-layout">
+      <aside class="controls-panel">
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-content">
+            <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 5v14M5 12l7-7 7 7"/>
+            </svg>
+            <span class="drop-label">Drop SVG or folder</span>
+            <span class="drop-hint">or click to browse</span>
+          </div>
+          <input type="file" id="fileInput" accept=".svg" multiple hidden>
+          <input type="file" id="folderInput" webkitdirectory hidden>
+        </div>
+
+        <div class="batch-panel" id="batchPanel" hidden>
+          <div class="batch-header">
+            <span class="batch-title">Batch Export</span>
+            <span class="batch-count" id="batchCount">0 files</span>
+          </div>
+          <div class="batch-list" id="batchList"></div>
+          <div class="batch-actions">
+            <button class="btn btn-primary btn-small" id="batchExportGlb">
+              Export All GLB
+            </button>
+            <button class="btn btn-secondary btn-small" id="batchClear">
+              Clear
+            </button>
+          </div>
+          <div class="batch-progress" id="batchProgress" hidden>
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <span class="progress-text" id="progressText">0 / 0</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Scale (meters)</span>
+          </label>
+          <input type="number" id="scaleInput" min="0.001" max="1000" step="0.01" value="1" class="number-input">
+          <span class="control-hint">Target size of longest dimension</span>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Extrusion Depth</span>
+            <span class="control-value" id="extrudeValue">0.2</span>
+          </label>
+          <input type="range" id="extrudeSlider" min="0.01" max="2" step="0.01" value="0.2" class="slider">
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Bevel Thickness</span>
+            <span class="control-value" id="bevelValue">0</span>
+          </label>
+          <input type="range" id="bevelSlider" min="0" max="0.1" step="0.005" value="0" class="slider">
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Curve Segments</span>
+            <span class="control-value" id="segmentsValue">4</span>
+          </label>
+          <input type="range" id="segmentsSlider" min="1" max="32" step="1" value="4" class="slider">
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Simplify Tolerance</span>
+            <span class="control-value" id="simplifyValue">0</span>
+          </label>
+          <input type="range" id="simplifySlider" min="0" max="5" step="0.1" value="0" class="slider">
+          <span class="control-hint">Reduce path complexity (0 = off)</span>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Merge Distance</span>
+            <span class="control-value" id="mergeDistValue">0.001</span>
+          </label>
+          <input type="range" id="mergeDistSlider" min="-7" max="1" step="0.1" value="-3" class="slider">
+          <span class="control-hint">Weld vertices within this distance (try 0.5-1.0)</span>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <span>Mesh Color</span>
+          </label>
+          <input type="color" id="colorPicker" value="#ff6b35" class="color-picker">
+        </div>
+
+        <div class="control-group checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="wireframeToggle">
+            <span class="checkbox-custom"></span>
+            <span>Show Wireframe</span>
+          </label>
+        </div>
+
+        <div class="export-buttons">
+          <button class="btn btn-primary" id="exportGlb" disabled>
+            <span>Export GLB</span>
+          </button>
+          <button class="btn btn-secondary" id="exportGltf" disabled>
+            <span>Export GLTF</span>
+          </button>
+        </div>
+
+        <div class="file-info" id="fileInfo" hidden>
+          <div class="info-item">
+            <span class="info-label">File</span>
+            <span class="info-value" id="fileName">—</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Shapes</span>
+            <span class="info-value" id="shapeCount">—</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Vertices</span>
+            <span class="info-value" id="vertexCount">—</span>
+          </div>
+        </div>
+
+      </aside>
+
+      <main class="viewport" id="viewport">
+        <div class="viewport-empty" id="viewportEmpty">
+          <svg class="cube-icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M32 8L56 20v24L32 56 8 44V20L32 8z"/>
+            <path d="M32 32v24M8 20l24 12 24-12"/>
+          </svg>
+          <span>Load an SVG to preview</span>
+        </div>
+        <canvas id="canvas"></canvas>
+        <div class="viewport-controls">
+          <button class="view-btn" id="viewIso" title="Isometric View">◇</button>
+          <button class="view-btn" id="viewTop" title="Top View">⬆</button>
+          <button class="view-btn" id="viewFront" title="Front View">◉</button>
+          <button class="view-btn" id="viewReset" title="Reset View">⟳</button>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.mjs"></script>
+</body>
+</html>
